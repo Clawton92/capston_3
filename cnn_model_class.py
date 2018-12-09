@@ -9,18 +9,26 @@ from keras import backend as K
 from keras.optimizers import RMSprop, adadelta
 import matplotlib.pyplot as plt
 import pandas as pd
-import numpy
+import numpy as np
 from simple_cnn import create_cnn
 import os
 import glob
-# from instantiate_transfer_model import create_transfer_model
+from instantiate_transfer_model import create_transfer_model
+
+# def channel_to_three(img):
+#     return np.stack((img,)*3, axis=-1)
 
 class ClassificationCNN():
 
-    def __init__(self, project_name, target_size, augmentation_strength=0.1, preprocessing=None, batch_size=50, scale=255):
+    def __init__(self, project_name, target_size, channels=1, augmentation_strength=0.1, preprocessing=None, batch_size=50, scale=255):
         self.project_name = project_name
         self.target_size = target_size
-        self.input_size = self.target_size + (1,)
+        if channels == 3:
+            self.input_size = self.target_size + (3,)
+            self.color_mode = 'rgb'
+        else:
+            self.input_size = self.target_size + (1,)
+            self.color_mode = 'grayscale'
         self.train_datagen = None
         self.train_generator= None
         self.validation_datagen = None
@@ -34,6 +42,7 @@ class ClassificationCNN():
 
         self.loss_function = None
         self.class_mode = None
+        self.last_activation = None
         self.history = None
 
     def get_data(self, train_folder, validation_folder, holdout_folder):
@@ -72,7 +81,7 @@ class ClassificationCNN():
 
         self.train_generator = self.train_datagen.flow_from_directory(
                             self.train_folder,
-                            color_mode='grayscale',
+                            color_mode=self.color_mode,
                             target_size=self.target_size,
                             batch_size=self.batch_size,
                             class_mode=self.class_mode,
@@ -80,7 +89,7 @@ class ClassificationCNN():
 
         self.validation_generator = self.validation_datagen.flow_from_directory(
                             self.validation_folder,
-                            color_mode='grayscale',
+                            color_mode=self.color_mode,
                             target_size=self.target_size,
                             batch_size=self.batch_size,
                             class_mode=self.class_mode,
@@ -95,8 +104,10 @@ class ClassificationCNN():
         self.loss_function = loss
         if self.loss_function == 'categorical_crossentropy':
             self.class_mode = 'categorical'
+            self.last_activation = 'softmax'
         elif self.loss_function == 'binary_crossentropy':
             self.class_mode = 'binary'
+            self.last_activation = 'sigmoid'
         else:
             print('WARNING: Please specify loss function as categorical or binary crossentropy')
 
@@ -144,7 +155,7 @@ class ClassificationCNN():
 
         self.holdout_generator = self.validation_datagen.flow_from_directory(
                             self.holdout_folder,
-                            color_mode='grayscale',
+                            color_mode=self.color_mode,
                             target_size=self.target_size,
                             batch_size=self.batch_size,
                             class_mode=self.class_mode,
@@ -195,24 +206,28 @@ class ClassificationCNN():
 
 class TransferCNN(ClassificationCNN):
 
-    def fit(self, train_folder, validation_folder, holdout_folder, input_model, n_categories, loss_function, optimizers, epochs, freeze_indices, warmup_epochs=5):
+    def fit(self, train_folder, validation_folder, holdout_folder, input_model, n_categories, loss, optimizers, epochs, freeze_indices, warmup_epochs=5):
+
+        self.n_categories = n_categories
 
         self.loss_function = loss
         if self.loss_function == 'categorical_crossentropy':
             self.class_mode = 'categorical'
+            self.last_activation = 'softmax'
         elif self.loss_function == 'binary_crossentropy':
             self.class_mode = 'binary'
+            self.last_activation = 'sigmoid'
         else:
             print('WARNING: Please specify loss function as categorical or binary crossentropy')
 
         self.get_data(train_folder, validation_folder, holdout_folder)
         self.build_generators()
 
-        model = input_model(self.input_size, self.n_categories, self.loss_function)
-        self.change_trainable_layers(model, feeze_indeces[0])
+        model = input_model(self.input_size, self.n_categories, self.last_activation)
+        self.change_trainable_layers(model, freeze_indices[0])
 
         model.compile(optimizer=optimizers[0],
-                        loss=loss_function, metrics=['accuracy'])
+                        loss=self.loss_function, metrics=['accuracy'])
 
         tensorboard = keras.callbacks.TensorBoard(
             log_dir=self.project_name, histogram_freq=0, batch_size=self.batch_size, write_graph=True, embeddings_freq=0)
@@ -226,15 +241,15 @@ class TransferCNN(ClassificationCNN):
         self.history = model.fit_generator(
                 self.train_generator,
                 steps_per_epoch=self.num_train// self.batch_size,
-                epochs=epochs,
+                epochs=warmup_epochs,
                 validation_data=self.validation_generator,
                 validation_steps=self.num_val // self.batch_size,
                 callbacks=call_backs)
 
-        self.change_trainable_layers(model, feeze_indeces[1])
+        self.change_trainable_layers(model, freeze_indices[1])
 
         model.compile(optimizer=optimizers[1],
-                      loss=loss, metrics=['accuracy'])
+                      loss=self.loss_function, metrics=['accuracy'])
 
         self.history = model.fit_generator(
                 self.train_generator,
@@ -250,6 +265,7 @@ class TransferCNN(ClassificationCNN):
 
         return save_name
 
+
     def change_trainable_layers(self, model, trainable_index):
 
         for layer in model.layers[:trainable_index]:
@@ -263,16 +279,25 @@ class TransferCNN(ClassificationCNN):
 
 if __name__ == '__main__':
 
-    holdout_folder = '/Users/christopherlawton/final_test_train_hold/hold'
-    train_folder = '/Users/christopherlawton/final_test_train_hold/train'
-    validation_folder = '/Users/christopherlawton/final_test_train_hold/test'
+    train_folder = '/Users/christopherlawton/galvanize/module_3/mammogram_data/cropped_train_test_split/3_channel/CC/train'
+    validation_folder = '/Users/christopherlawton/galvanize/module_3/mammogram_data/cropped_train_test_split/3_channel/CC/test'
+    holdout_folder = '/Users/christopherlawton/galvanize/module_3/mammogram_data/cropped_train_test_split/3_channel/CC/hold'
 
     #simple cnn
-    input_shape = (32,32,1)
-    target_size = (32,32)
-    scale = 65535
-    epochs = 1
+    input_shape = (75,75,3)
+    target_size = (75,75)
+    scale = 255
+    epochs = 5
 
-    simple_model = create_cnn
-    simple_cnn = ClassificationCNN('class_test_one', target_size, augmentation_strength=0.1, preprocessing=None, batch_size=50, scale=65535)
-    simple_cnn.fit(simple_model, train_folder, validation_folder, holdout_folder, epochs, 'categorical_crossentropy', optimizer='adadelta')
+    # simple_model = create_cnn
+    # simple_cnn = ClassificationCNN('class_test_one', target_size, channels=1, augmentation_strength=0.1, preprocessing=None, batch_size=50, scale=65535)
+    # simple_cnn.fit(simple_model, train_folder, validation_folder, holdout_folder, epochs, 'categorical_crossentropy', optimizer='adadelta')
+
+    warmup_epochs = 3
+    epochs = epochs - warmup_epochs
+    optimizers = [RMSprop(lr=0.0006), RMSprop(lr=0.0001)] # keep learning rates low to keep from wrecking weights
+    train_head_idx = [311, 299]
+    transfer_model = create_transfer_model
+    transfer_cnn = TransferCNN('transfer_test_one', target_size, channels=3, augmentation_strength=0.1, preprocessing=None, batch_size=50, scale=255)
+    savename = transfer_cnn.fit(train_folder, validation_folder, holdout_folder, transfer_model, 2, \
+                        'categorical_crossentropy', optimizers, epochs, train_head_idx, warmup_epochs=warmup_epochs)

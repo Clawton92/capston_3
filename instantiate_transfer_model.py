@@ -1,4 +1,4 @@
-from keras.applications import InceptionV3
+from keras.applications import InceptionV3, Xception
 from keras.layers import Dense, GlobalAveragePooling2D, Flatten, Dropout
 from keras.models import Model
 
@@ -13,14 +13,14 @@ def add_model_head(base_model, n_categories, activation_function):
     Returns:
         keras Sequential model: model with new head
         """
-    if activation_func = 'sigmoid':
+    if activation_function == 'sigmoid':
         n_categories = 1
     else:
         n_categories = n_categories
 
     x = base_model.output
     x = GlobalAveragePooling2D()(x)
-    predictions = Dense(n_categories, activation=activation_func)(x)
+    predictions = Dense(n_categories, activation=activation_function)(x)
     model = Model(inputs=base_model.input, outputs=predictions)
     return model
 
@@ -43,5 +43,22 @@ def create_transfer_model(input_size, n_categories, activation_function, weights
     base_model = model(weights=weights,
                       include_top=False,
                       input_shape=input_size)
-    model = add_model_head(base_model, activation_function)
+    model = add_model_head(base_model, n_categories, activation_function)
     return model
+
+def print_model_properties(model, indices = 0):
+
+    '''
+    Print all trainable layers for tranfer model (using for feature extraction and fine tuning)
+    args:
+    '''
+    for i, layer in enumerate(model.layers[indices:]):
+        print(f"Layer {i+indices} | Name: {layer.name} | Trainable: {layer.trainable}")
+
+if __name__=='__main__':
+
+    inceptionv3_model = create_transfer_model((299,299, 3), 2, 'softmax')
+    print_model_properties(inceptionv3_model)
+
+    # xception_model = create_transfer_model((299,299, 3), 2, 'softmax', model=Xception)
+    # print_model_properties(xception_model)
